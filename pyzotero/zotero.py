@@ -529,6 +529,21 @@ class Zotero(object):
                 val[u'group_id'] = group_id[k]
         except KeyError:
             pass
+        #Check for a parent item key, and add to the dict as 'parentkey'
+        for e in retrieved.entries:
+            links = e['links'] 
+            itemlinkurl = [l for l in links if l['rel'] == u'self'][0]['href']
+            parentlink = [l for l in links if l['rel'] == u'up']
+            if parentlink:
+                parenturl = parentlink[0]['href'] 
+                itemkey = itemlinkurl.split("/")[6].split("?")[0]
+                parentkey = parenturl.split("/")[6].split("?")[0]
+                if itemkey != parentkey:
+                    print 10*'*', itemkey, parentkey
+                    for i in items:
+                        if i['key'] == itemkey:
+                            i['parentkey'] = parentkey
+
         self.url_params = None
         return items
 
