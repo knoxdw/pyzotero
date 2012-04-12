@@ -539,7 +539,6 @@ class Zotero(object):
                 itemkey = itemlinkurl.split("/")[6].split("?")[0]
                 parentkey = parenturl.split("/")[6].split("?")[0]
                 if itemkey != parentkey:
-                    print 10*'*', itemkey, parentkey
                     for i in items:
                         if i['key'] == itemkey:
                             i['parentkey'] = parentkey
