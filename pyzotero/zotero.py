@@ -141,6 +141,7 @@ def retrieve(func):
                 self.etags = etags(retrieved)
             # extract next, previous, first, last links
             self.links = self._extract_links(parsed)
+
             return processor(parsed)
         # otherwise, just return the unparsed content as is
         else:
@@ -234,6 +235,7 @@ class Zotero(object):
         # parse the result into Python data structures
         return data
 
+		
     def _extract_links(self, doc):
         """ Extract self, first, next, last links from an Atom doc, and add
             an instance's API key to the links if it exists
@@ -525,6 +527,9 @@ class Zotero(object):
                 time.strftime(
                     "%a, %d %b %Y %H:%M:%S %Z",
                     retrieved.entries[key]['updated_parsed'])
+            # get username associated with Zotero item
+            items[key]['username'] = retrieved.entries[key]['author']
+
         # Try to get a group ID, and add it to the dict
         try:
             group_id = [urlparse(g['links'][0]['href']).path.split('/')[2]
@@ -546,6 +551,8 @@ class Zotero(object):
                     for i in items:
                         if i['key'] == itemkey:
                             i['parentkey'] = parentkey
+
+
 
         self.url_params = None
         return items
