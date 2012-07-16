@@ -24,7 +24,7 @@ along with Pyzotero. If not, see <http://www.gnu.org/licenses/>.
 """
 
 __author__ = 'urschrei@gmail.com'
-__version__ = '0.9.8'
+__version__ = '0.9.9'
 
 
 import urllib
@@ -34,9 +34,14 @@ import feedparser
 import json
 import uuid
 import time
+import os
+import hashlib
 import datetime
 import re
 import pytz
+from poster.encode import multipart_encode
+from poster.streaminghttp import register_openers as reg_open
+import mimetypes
 from urlparse import urlparse
 import xml.etree.ElementTree as et
 
@@ -47,6 +52,8 @@ import zotero_errors as ze
 # Avoid hanging the application if there's no server response
 timeout = 30
 socket.setdefaulttimeout(timeout)
+# register streaming HTTP opener for file uploads
+reg_open()
 
 
 def ib64_patched(self, attrsD, contentparams):
@@ -118,13 +125,13 @@ def retrieve(func):
         retrieved = self._retrieve_data(func(self, *args))
         # determine content and format, based on url params
         content = self.content.search(
-                self.request.get_full_url()).group(0) if \
+                self.request.get_full_url()) and \
             self.content.search(
-                    self.request.get_full_url()) else 'bib'
+                    self.request.get_full_url()).group(0) or 'bib'
         fmt = self.fmt.search(
-                self.request.get_full_url()).group(0) if \
+                self.request.get_full_url()) and \
             self.fmt.search(
-                    self.request.get_full_url()) else 'atom'
+                    self.request.get_full_url()).group(0) or 'atom'
         # step 1: process atom if it's atom-formatted
         if fmt == 'atom':
             parsed = feedparser.parse(retrieved)
@@ -141,15 +148,13 @@ def retrieve(func):
     return wrapped_f
 
 
-
 class Zotero(object):
     """
     Zotero API methods
     A full list of methods can be found here:
     http://www.zotero.org/support/dev/server_api
     """
-
-    def __init__(self, library_id = None, library_type = None, api_key = None):
+    def __init__(self, library_id=None, library_type=None, api_key=None):
         """ Store Zotero credentials
         """
         self.endpoint = 'https://api.zotero.org'
@@ -199,7 +204,7 @@ class Zotero(object):
         """
         # cache template and retrieval time for subsequent calls
         thetime = datetime.datetime.utcnow().replace(
-            tzinfo = pytz.timezone('GMT'))
+            tzinfo=pytz.timezone('GMT'))
         self.templates[key] = {
             'tmplt': template,
             'updated': thetime}
@@ -212,7 +217,7 @@ class Zotero(object):
         return dict([[k, v] for k, v in to_clean.iteritems()
                     if k not in self.temp_keys])
 
-    def _retrieve_data(self, request = None):
+    def _retrieve_data(self, request=None):
         """
         Retrieve Zotero items via the API
         Combine endpoint and request to access the specific resource
@@ -250,7 +255,7 @@ class Zotero(object):
             # No links present, because it's a single item
             return None
 
-    def _updated(self, url, payload, template = None):
+    def _updated(self, url, payload, template=None):
         """
         Generic call to see if a template request returns 304
         accepts:
@@ -262,19 +267,18 @@ class Zotero(object):
         """
         # If the template is more than an hour old, try a 304
         if abs(datetime.datetime.utcnow().replace(
-            tzinfo = pytz.timezone('GMT')) -
+            tzinfo=pytz.timezone('GMT')) -
             self.templates[template]['updated']).seconds > 3600:
             opener = urllib2.build_opener(NotModifiedHandler())
             query = self.endpoint + url.format(
-                u = self.library_id, t = self.library_type, **payload)
+                u=self.library_id, t=self.library_type, **payload)
             req = urllib2.Request(query)
             req.add_header(
                 'If-Modified-Since',
                 payload['updated'].strftime("%a, %d %b %Y %H:%M:%S %Z"))
             req.add_header('User-Agent', 'Pyzotero/%s' % __version__)
             try:
-                url_handle = opener.open(req)
-                _ = url_handle.info()
+                url_handle = opener.open(req).read()
             except (urllib2.HTTPError, urllib2.URLError), error:
                 error_handler(req, error)
             return hasattr(url_handle, 'code') and url_handle.code == 304
@@ -301,8 +305,8 @@ class Zotero(object):
         """
         try:
             query = urllib.quote(query_string.format(
-                u = self.library_id,
-                t = self.library_type))
+                u=self.library_id,
+                t=self.library_type))
         except KeyError, err:
             raise ze.ParamNotPassed, \
             'There\'s a request parameter missing: %s' % err
@@ -323,14 +327,14 @@ class Zotero(object):
         """ Return the total number of items in the specified collection
         """
         query = '/{t}/{u}/collections/{c}/items'.format(
-            u = self.library_id, t = self.library_type, c = collection.upper())
+            u=self.library_id, t=self.library_type, c=collection.upper())
         return self._totals(query)
 
     def num_tagitems(self, tag):
         """ Return the total number of items for the specified tag
         """
         query = '/{t}/{u}/tags/{ta}/items'.format(
-            u = self.library_id, t = self.library_type, ta = tag)
+            u=self.library_id, t=self.library_type, ta=tag)
         return self._totals(query)
 
     def _totals(self, query):
@@ -369,7 +373,7 @@ class Zotero(object):
         """ Get a specific item
         """
         query_string = '/{t}/{u}/items/{i}'.format(
-        u = self.library_id, t = self.library_type, i = item.upper())
+        u=self.library_id, t=self.library_type, i=item.upper())
         return self._build_query(query_string)
 
     @retrieve
@@ -377,7 +381,7 @@ class Zotero(object):
         """ Get a specific item's child items
         """
         query_string = '/{t}/{u}/items/{i}/children'.format(
-        u = self.library_id, t = self.library_type, i = item.upper())
+        u=self.library_id, t=self.library_type, i=item.upper())
         return self._build_query(query_string)
 
     @retrieve
@@ -385,7 +389,7 @@ class Zotero(object):
         """ Get items for a specific tag
         """
         query_string = '/{t}/{u}/tags/{ta}/items'.format(
-        u = self.library_id, t = self.library_type, ta = tag)
+        u=self.library_id, t=self.library_type, ta=tag)
         return self._build_query(query_string)
 
     @retrieve
@@ -393,7 +397,7 @@ class Zotero(object):
         """ Get a specific collection's items
         """
         query_string = '/{t}/{u}/collections/{c}/items'.format(
-        u = self.library_id, t = self.library_type, c = collection.upper())
+        u=self.library_id, t=self.library_type, c=collection.upper())
         return self._build_query(query_string)
 
     @retrieve
@@ -408,7 +412,7 @@ class Zotero(object):
         """ Get subcollections for a specific collection
         """
         query_string = '/{t}/{u}/collections/{c}/collections'.format(
-        u = self.library_id, t = self.library_type, c = collection.upper())
+        u=self.library_id, t=self.library_type, c=collection.upper())
         return self._build_query(query_string)
 
     @retrieve
@@ -430,7 +434,7 @@ class Zotero(object):
         """ Get tags for a specific item
         """
         query_string = '/{t}/{u}/items/{i}/tags'.format(
-        u = self.library_id, t = self.library_type, i = item.upper())
+        u=self.library_id, t=self.library_type, i=item.upper())
         return self._build_query(query_string)
 
     def all_top(self, **kwargs):
@@ -579,7 +583,7 @@ class Zotero(object):
         # if we have a template and it hasn't been updated since we stored it
         template_name = 'item_template_' + itemtype
         query_string = '/items/new?itemType={i}'.format(
-            i = itemtype)
+            i=itemtype)
         if self.templates.get(template_name) and not \
                 self._updated(
                     query_string,
@@ -589,6 +593,118 @@ class Zotero(object):
         # otherwise perform a normal request and cache the response
         retrieved = self._retrieve_data(query_string)
         return self._cache(json.loads(retrieved), template_name)
+
+    def attachment_template(self, attachment_type):
+        """
+        Return a new attachment template of the required type:
+        imported_file
+        imported_url
+        linked_file
+        linked_url
+        """
+        return self.item_template('attachment&linkMode=' + attachment_type)
+
+    def attachment(self, payload, parentid=None):
+        """
+        Create attachments
+        accepts a list of one or more attachment template dicts
+        and an optional parent Item ID. If this is specified,
+        attachments are created under this ID
+        """
+        if not parentid:
+            liblevel = '/users/{u}/items?key={k}'
+        else:
+            liblevel = '/users/{u}/items/{i}/children?key={k}'
+        # Create one or more new attachments
+        to_send = json.dumps({'items': payload})
+        req = urllib2.Request(self.endpoint +
+            liblevel.format(
+                u=self.library_id,
+                i=parentid,
+                k=self.api_key))
+        req.add_data(to_send)
+        req.add_header('X-Zotero-Write-Token', token())
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('User-Agent', 'Pyzotero/%s' % __version__)
+        try:
+            resp = urllib2.urlopen(req)
+            data = resp.read()
+        except (urllib2.HTTPError, urllib2.URLError), error:
+            error_handler(req, error)
+        created = self._json_processor(feedparser.parse(data))
+        for idx, content in enumerate(payload):
+            attach = content.get('filename')
+            if attach:
+                # begin the upload auth dance
+                # Step 1: get upload authorisation for the file
+                authreq = urllib2.Request(self.endpoint
+                    + '/users/{u}/items/{i}/file?key={k}&params=1'.format(
+                        u=self.library_id,
+                        i=created[idx]['key'],
+                        k=self.api_key))
+                # add required attributes to the request
+                mtypes = mimetypes.guess_type(attach)
+                digest = hashlib.md5()
+                with open(attach, 'rb') as f:
+                    for chunk in iter(lambda: f.read(8192), b''):
+                        digest.update(chunk)
+                authreq.add_data(urllib.urlencode({
+                    'md5': digest.hexdigest(),
+                    'filename': os.path.basename(attach),
+                    'filesize': os.path.getsize(attach),
+                    'mtime': str(int(os.path.getmtime(attach) * 1000)),
+                    'contentType': mtypes[0] or 'application/octet-stream',
+                    'charset': mtypes[1]}))
+                # add headers
+                authreq.add_header(
+                    'Content-Type',
+                    'application/x-www-form-urlencoded')
+                authreq.add_header('If-None-Match', '*')
+                try:
+                    authresp = urllib2.urlopen(authreq)
+                    authdata = json.loads(authresp.read())
+                except (urllib2.HTTPError, urllib2.URLError), error:
+                    error_handler(authreq, error)
+                if not authdata.get('exists'):
+                    # Step 2: auth step successful, file does not exist
+                    encoded, headers = multipart_encode([
+                        (u'AWSAccessKeyId',
+                            authdata['params'][u'AWSAccessKeyId']),
+                        (u'success_action_status',
+                            authdata['params'][u'success_action_status']),
+                        (u'acl', authdata['params'][u'acl']),
+                        (u'key', authdata['params'][u'key']),
+                        (u'signature', authdata['params'][u'signature']),
+                        (u'policy', authdata['params'][u'policy']),
+                        (u'Content-MD5', authdata['params'][u'Content-MD5']),
+                        (u'Content-Type', authdata['params'][u'Content-Type']),
+                        ('file', open(attach, 'r'))])
+                    upload = urllib2.Request(authdata['url'], encoded, headers)
+                    try:
+                        urllib2.urlopen(upload).read()
+                    except (urllib2.HTTPError, urllib2.URLError), error:
+                        error_handler(upload, error)
+                    # Step 3: upload successful, so register it
+                    reg = urllib2.Request(self.endpoint +
+                        '/users/{u}/items/{i}/file?key={k}'.format(
+                            u=self.library_id,
+                            i=created[idx]['key'],
+                            k=self.api_key))
+                    reg.add_data(urllib.urlencode(
+                        {'upload': authdata.get('uploadKey')}))
+                    reg.add_header(
+                        'Content-Type',
+                        'application/x-www-form-urlencoded')
+                    reg.add_header('If-None-Match', '*')
+                    req.add_header('User-Agent', 'Pyzotero/%s' % __version__)
+                    try:
+                        urllib2.urlopen(reg).read()
+                    except (urllib2.HTTPError, urllib2.URLError), regerror:
+                        error_handler(reg, regerror)
+                else:
+                    # item exists
+                    continue
+        return True
 
     def add_tags(self, item, *tags):
         """
@@ -681,7 +797,7 @@ class Zotero(object):
         # check for a valid cached version
         template_name = 'item_type_fields_' + itemtype
         query_string = '/itemTypeFields?itemType={i}'.format(
-            i = itemtype)
+            i=itemtype)
         if self.templates.get(template_name) and not \
                 self._updated(
                     query_string,
@@ -713,7 +829,7 @@ class Zotero(object):
         # check for a valid cached version
         template_name = 'item_creator_types_' + itemtype
         query_string = '/itemTypeFields?itemType={i}'.format(
-            i = itemtype)
+            i=itemtype)
         if self.templates.get(template_name) and not \
                 self._updated(
                     query_string,
@@ -734,11 +850,13 @@ class Zotero(object):
                     "You may only create up to 50 items per call"
         to_send = json.dumps({'items': [i for i in self._cleanup(*payload)]})
         req = urllib2.Request(self.endpoint
-            + '/{t}/{u}/items'.format(t = self.library_type, u = self.library_id) + '?'
-            + urllib.urlencode({'key': self.api_key}))
+            + '/{t}/{u}/items?key={k}'.format(
+                t=self.library_type,
+                u=self.library_id,
+                k=self.api_key))
         req.add_data(to_send)
         req.add_header('X-Zotero-Write-Token', token())
-        req.add_header('Content-Type', 'application/json' )
+        req.add_header('Content-Type', 'application/json')
         req.add_header('User-Agent', 'Pyzotero/%s' % __version__)
         try:
             resp = urllib2.urlopen(req)
@@ -765,8 +883,10 @@ class Zotero(object):
             payload['parent'] = ''
         to_send = json.dumps(payload)
         req = urllib2.Request(
-        self.endpoint + '/{t}/{u}/collections'.format(t = self.library_type, u = self.library_id) +
-            '?' + urllib.urlencode({'key': self.api_key}))
+        self.endpoint + '/{t}/{u}/collections?key={k}'.format(
+            t=self.library_type,
+            u=self.library_id,
+            k=self.api_key))
         req.add_data(to_send)
         req.add_header('X-Zotero-Write-Token', token())
         req.add_header('User-Agent', 'Pyzotero/%s' % __version__)
@@ -790,7 +910,7 @@ class Zotero(object):
         opener = urllib2.build_opener(urllib2.HTTPHandler)
         req = urllib2.Request(
         self.endpoint + '/{t}/{u}/collections/{c}'.format(
-            t = self.library_type, u = self.library_id, c = key) +
+            t=self.library_type, u=self.library_id, c=key) +
             '?' + urllib.urlencode({'key': self.api_key}))
         req.add_data(to_send)
         req.get_method = lambda: 'PUT'
@@ -801,6 +921,40 @@ class Zotero(object):
         except (urllib2.HTTPError, urllib2.URLError), error:
             error_handler(req, error)
         return True
+
+    def attachment_simple(self, files, parentid=None):
+        """
+        Add attachments using filenames as title
+        Arguments:
+        One or more file paths to add as attachments:
+        An optional Item ID, which will create child attachments
+        """
+        orig = self.attachment_template('imported_file')
+        to_add = [orig.copy() for f in files]
+        for idx, tmplt in enumerate(to_add):
+            tmplt['title'] = os.path.basename(files[idx])
+            tmplt['filename'] = files[idx]
+        if parentid:
+            return self.attachment(to_add, parentid)
+        else:
+            return self.attachment(to_add)
+
+    def attachment_both(self, files, parentid=None):
+        """
+        Add child attachments using title, filename
+        Arguments:
+        One or more lists or tuples containing title, file path
+        An optional Item ID, which will create child attachments
+        """
+        orig = self.attachment_template('imported_file')
+        to_add = [orig.copy() for f in files]
+        for idx, tmplt in enumerate(to_add):
+            tmplt['title'] = files[idx][0]
+            tmplt['filename'] = files[idx][1]
+        if parentid:
+            return self.attachment(to_add, parentid)
+        else:
+            return self.attachment(to_add)
 
     def update_item(self, payload):
         """
@@ -813,7 +967,7 @@ class Zotero(object):
         # Override urllib2 to give it a PUT verb
         opener = urllib2.build_opener(urllib2.HTTPHandler)
         req = urllib2.Request(self.endpoint + '/{t}/{u}/items/'.format(
-            t = self.library_type, u = self.library_id) + ident +
+            t=self.library_type, u=self.library_id) + ident +
             '?' + urllib.urlencode({'key': self.api_key}))
         req.get_method = lambda: 'PUT'
         req.add_data(to_send)
@@ -838,9 +992,11 @@ class Zotero(object):
         to_send = ' '.join([p['key'].encode('utf8') for p in payload])
 
         req = urllib2.Request(
-        self.endpoint + '/{t}/{u}/collections/{c}/items'.format(
-            t = self.library_type, u = self.library_id, c = collection.upper()) +
-            '?' + urllib.urlencode({'key': self.api_key}))
+        self.endpoint + '/{t}/{u}/collections/{c}/items?key={k}'.format(
+            t=self.library_type,
+            u=self.library_id,
+            c=collection.upper(),
+            k=self.api_key))
         req.add_data(to_send)
         req.add_header('User-Agent', 'Pyzotero/%s' % __version__)
         try:
@@ -860,7 +1016,10 @@ class Zotero(object):
         opener = urllib2.build_opener(urllib2.HTTPHandler)
         req = urllib2.Request(
         self.endpoint + '/{t}/{u}/collections/{c}/items/'.format(
-            t = self.library_type, u = self.library_id, c = collection.upper()) + ident +
+            t=self.library_type,
+            u=self.library_id,
+            c=collection.upper())
+            + ident +
             '?' + urllib.urlencode({'key': self.api_key}))
         req.get_method = lambda: 'DELETE'
         req.add_header('User-Agent', 'Pyzotero/%s' % __version__)
@@ -880,7 +1039,7 @@ class Zotero(object):
         # Override urllib2 to give it a DELETE verb
         opener = urllib2.build_opener(urllib2.HTTPHandler)
         req = urllib2.Request(self.endpoint + '/{t}/{u}/items/'.format(
-            t = self.library_type, u = self.library_id) + ident +
+            t=self.library_type, u=self.library_id) + ident +
             '?' + urllib.urlencode({'key': self.api_key}))
         req.get_method = lambda: 'DELETE'
         req.add_header('If-Match', etag)
@@ -901,7 +1060,7 @@ class Zotero(object):
         # Override urllib2 to give it a DELETE verb
         opener = urllib2.build_opener(urllib2.HTTPHandler)
         req = urllib2.Request(self.endpoint + '/{t}/{u}/collections/{c}'
-            .format(t = self.library_type, u = self.library_id, c = ident) +
+            .format(t=self.library_type, u=self.library_id, c=ident) +
             '?' + urllib.urlencode({'key': self.api_key}))
         req.get_method = lambda: 'DELETE'
         req.add_header('If-Match', etag)
@@ -913,37 +1072,38 @@ class Zotero(object):
         return True
 
 
-
 def error_handler(req, error):
     """ Error handler for HTTP requests
     """
-    # Distinguish between URL errors and HTTP status codes of 400+
-    if hasattr(error, 'reason'):
-        raise ze.CouldNotReachURL, \
-"Could not reach server. Reason: %s\nURL: %s" % (error, req.get_full_url())
-    elif hasattr(error, 'code'):
-        if error.code == 401 or error.code == 403:
-            raise ze.UserNotAuthorised, \
-"Not authorised: (%s)\nURL: %s\nType: %s\nData: %s" % (
-    error.code, req.get_full_url(), req.get_method(), req.get_data())
-        elif error.code == 400:
-            raise ze.UnsupportedParams, \
-"Invalid request, probably due to unsupported parameters: %s\n%s\n%s" % \
-            (req.get_full_url(), req.get_method(), req.get_data())
-        elif error.code == 404:
-            raise ze.ResourceNotFound, \
-"No results for the following query:\n%s" % req.get_full_url()
-        elif error.code == 409:
-            raise ze.Conflict, \
-"The target library is locked"
-        elif error.code == 412:
-            raise ze.PreConditionFailed, \
-"The item was already submitted, or has changed since you retrieved it"
-        else:
-            raise ze.HTTPError, \
-"HTTP Error %s (%s)\nURL: %s\nData: %s" % (
-            error.msg, error.code, req.get_full_url(), req.get_data())
+    error_codes = {
+        400: ze.UnsupportedParams,
+        401: ze.UserNotAuthorised,
+        403: ze.UserNotAuthorised,
+        404: ze.ResourceNotFound,
+        409: ze.Conflict,
+        412: ze.PreConditionFailed,
+        413: ze.RequestEntityTooLarge,
+        428: ze.PreConditionRequired,
+        429: ze.TooManyRequests,
+    }
 
+    def err_msg(req, error):
+        """ Return a nicely-formatted error message
+        """
+        return "\nCode: %s (%s)\nURL: %s\nMethod: %s\nResponse: %s" % (
+                error.code,
+                error.msg,
+                req.get_full_url(),
+                req.get_method(),
+                error.read())
+
+    if hasattr(error, 'code') and error_codes.get(error.code):
+        raise error_codes.get(error.code), err_msg(req, error)
+    elif hasattr(error, 'code'):
+        raise ze.HTTPError, err_msg(req, error)
+    else:
+        raise ze.HTTPError, \
+"\nCouldn't reach the host.\nReason: %s" % error.reason
 
 
 class NotModifiedHandler(urllib2.BaseHandler):
@@ -953,6 +1113,7 @@ class NotModifiedHandler(urllib2.BaseHandler):
     """
     def __init__(self):
         pass
+
     def http_error_304(self, req, f_p, code, message, headers):
         """ The actual handler """
         addinfourl = urllib2.addinfourl(f_p, headers, req.get_full_url())

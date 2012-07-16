@@ -11,13 +11,13 @@ from setuptools import setup, find_packages
 
 setup(
     name = 'Pyzotero',
-    version = '0.9.8',
+    version = '0.9.9',
     description = 'Python wrapper for the Zotero API',
     author = 'Stephan Hügel',
     author_email = 'urschrei@gmail.com',
     license = 'GNU GPL Version 3',
     url = 'https://github.com/urschrei/pyzotero',
-    download_url = 'https://github.com/urschrei/pyzotero/tarball/v0.9.8',
+    download_url = 'https://github.com/urschrei/pyzotero/tarball/v0.9.9',
     keywords = ['zotero'],
     classifiers = [
         'Programming Language :: Python',
@@ -29,7 +29,7 @@ setup(
         'Topic :: Software Development :: Libraries :: Python Modules',
         ],
     packages = find_packages(),
-    install_requires = ['feedparser >= 5.0.1', 'pytz'],
+    install_requires = ['feedparser >= 5.0.1', 'pytz', 'poster >= 0.8.1'],
     long_description = """\
 A Python wrapper for the Zotero Server API
 ------------------------------------------
